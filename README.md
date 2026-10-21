@@ -142,6 +142,25 @@ git push origin v0.1.1
 
 参考：[Google Play API 接入](https://developers.google.com/android-publisher/getting_started)、[应用签名与 upload key](https://developer.android.com/studio/publish/app-signing)、[上传 Action](https://github.com/r0adkll/upload-google-play)。
 
+## 网站发布（GitHub Pages）
+
+网站源文件位于 `docs/`，由 `.github/workflows/pages.yml` 在 `main` 分支的 `docs/` 或该工作流发生变化时发布，也可在 Actions 页面手动运行。GitHub Pages 直接托管静态文件，不再使用 Cloudflare Workers／Wrangler，仓库中原有的 `wrangler.toml` 已删除。
+
+### 首次配置
+
+1. 在 GitHub 仓库的 **Settings → Pages → Build and deployment** 把 **Source** 设为 **GitHub Actions**。
+2. 在同一页面的 **Custom domain** 填入 `map.locality.asia` 并保存；DNS 检查通过后勾选 **Enforce HTTPS**。使用 Actions 发布时 GitHub 不读取仓库中的 `CNAME` 文件，域名以仓库设置为准。
+3. 在 Cloudflare DNS 中删除旧的 Worker 自定义域名／路由记录，为 `map` 添加 CNAME 记录指向 `tsurumi-yizhou.github.io`，并把代理状态设为 **DNS only**（灰云）。GitHub Pages 需要直接看到该 CNAME 才能签发证书；保留 Cloudflare 代理会造成证书验证失败或形成双重代理。
+4. 删除 Cloudflare 中的旧 Worker 自定义域名，避免它继续占用 `map.locality.asia`。DNS 生效后访问 `https://map.locality.asia`；默认的 Pages 地址仍为 `https://tsurumi-yizhou.github.io/AsiaLocalityMap/`。
+
+首次 DNS 生效前不要删除现有 Cloudflare 记录，否则站点会短暂不可用。GitHub Pages 只能绑定一个自定义域名；域名切换完成后可删除 Cloudflare 上的 Worker。
+
+本地预览：
+
+```sh
+python3 -m http.server -d docs 8000
+```
+
 ## 文档
 
 - [资料约定与历史口径](docs/product.html)
