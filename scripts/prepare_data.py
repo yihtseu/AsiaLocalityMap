@@ -59,6 +59,36 @@ def dump(value):
     return json_text(value, compact=True, default=str)
 
 
+def safe_shape(geometry):
+    """Build a Shapely geometry while closing 3-point rings and dropping degenerate rings."""
+    def clean_ring(ring):
+        if len(ring) >= 3 and ring[0] != ring[-1]:
+            ring = [*ring, ring[0]]
+        return ring if len(ring) >= 4 else None
+
+    def clean_poly(rings):
+        if not rings:
+            return None
+        shell = clean_ring(rings[0])
+        if shell is None:
+            return None
+        holes = [h for h in (clean_ring(r) for r in rings[1:]) if h is not None]
+        return [shell, *holes]
+
+    kind = geometry.get("type")
+    if kind == "Polygon":
+        cleaned = clean_poly(geometry["coordinates"])
+        if cleaned is None:
+            raise ValueError("Polygon has no valid exterior ring")
+        geometry = {**geometry, "coordinates": cleaned}
+    elif kind == "MultiPolygon":
+        cleaned = [p for p in (clean_poly(poly) for poly in geometry["coordinates"]) if p is not None]
+        if not cleaned:
+            raise ValueError("MultiPolygon has no valid parts")
+        geometry = {**geometry, "coordinates": cleaned}
+    return shape(geometry)
+
+
 def read_shp(archive, token=None):
     z = zipfile.ZipFile(archive)
     names = [n for n in z.namelist() if n.endswith(".shp") and (token is None or token in n)]
@@ -268,7 +298,7 @@ def main():
               "cn", "都司辖区参考" if name == "辽东都司" else "府级辖区参考", name,
               dict(source["properties"], source_year=1582, original_layer="ming-ad1582",
                    reviewed_scope="adjoining Yongping-Liaodong source pair"),
-              shape(source["geometry"]), years=[DEFAULT_YEAR], periods=["ming"], rank=1,
+              safe_shape(source["geometry"]), years=[DEFAULT_YEAR], periods=["ming"], rank=1,
               system="军事" if name == "辽东都司" else "民政", geometry_year=1582,
               flags=["third_party_atlas_reference", "individual_garrison_boundaries_unavailable"],
               subtitle="1582年永平府—辽东都司同源参考面，用于1585年明代背景；不是逐卫、逐县界。未强行贴合异年朝鲜边界。")
