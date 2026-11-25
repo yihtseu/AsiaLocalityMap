@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import unittest
+from shapely import make_valid
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
@@ -13,6 +14,7 @@ from history_periods import CATALOG, YEARS, DEFAULT_YEAR, period_at, reference_y
 from historical_territories import CN_POLITIES
 from korean_boundaries import GORYEO_YEAR, load_upper_areas, SOURCE_BASES
 from boundary_topology import decode_geometry
+from prepare_data import safe_shape
 
 APP = ROOT / 'data/processed/android'
 
@@ -121,7 +123,7 @@ class HistoricalDataTests(unittest.TestCase):
         self.assertLess(shape(yongping['geometry']).distance(shape(shuntian['geometry'])),.001)
         original=json.loads((ROOT/'data/raw/ming-admin-1582.geojson').read_text())['features']
         for feature in (liaodong,yongping):
-            src=shape(next(f['geometry'] for f in original if f['properties']['name']==feature['name']))
+            src=make_valid(safe_shape(next(f['geometry'] for f in original if f['properties']['name']==feature['name'])))
             # Display geometry is deliberately coarser; source geometry stays in
             # SQLite. Bound changes by the simplification scale along the outline.
             self.assertLess(src.symmetric_difference(shape(feature['geometry'])).area, src.length * .008)

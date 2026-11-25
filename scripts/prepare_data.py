@@ -86,7 +86,8 @@ def safe_shape(geometry):
         if not cleaned:
             raise ValueError("MultiPolygon has no valid parts")
         geometry = {**geometry, "coordinates": cleaned}
-    return shape(geometry)
+    result = shape(geometry)
+    return result if result.is_valid else make_valid(result)
 
 
 def read_shp(archive, token=None):
