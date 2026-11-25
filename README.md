@@ -4,9 +4,9 @@ Android 本地历史地图 demo，包名 **asia.locality.map**。打开后请求
 
 应用与 Android 测试全部使用 Kotlin，分别位于 `app/src/main/kotlin/`、`app/src/androidTest/kotlin/`；数据下载、清洗和截图调度保留 Python。Gradle 使用 Kotlin DSL。Lint 启用 `warningsAsErrors`，不使用警告屏蔽或 baseline。
 
-支持单指拖动、双指缩放、双击放大、加减号缩放按钮、重新定位、地名检索。搜索与定位保留文字并配图标，缩放按钮提供无障碍操作名称。点击地名只选中，不显示资料、来源或沿革面板。地图和定位匹配完全离线，无网络权限。
+支持单指拖动、双指缩放、双击放大、加减号缩放按钮、重新定位、古今地名检索。搜索与定位保留文字并配图标，缩放按钮提供无障碍操作名称。定位或选中地名后，底部浮现宣纸古今沿革条，展示上级辖区、治所类型、八风方位与距离（或来源今地考证），并列出该坐标在各时期的真实辖属，轻点即可瞬切时代并以淡赭墨虚线叠印上一时期旧界；支持在本地为亲历古郡县钤盖「曾至」朱印。地图和定位匹配完全离线，无网络权限。
 
-界面使用 Compose Material 3 Adaptive：默认仅显示地图与常用操作，手机搜索为底部面板，平板搜索为侧栏；地图通过 AndroidView 保留 Canvas 绘制。支持中文、日文、韩文界面，跟随系统语言，也可通过 Android 13+ 的应用语言设置切换。朝鲜地名以有依据的汉字名为主，谚文以小字显示，搜索兼容原文与简繁体；越南地方资料仍待接入。
+界面使用 Compose Material 3 Adaptive：默认仅显示地图与常用操作，手机搜索为底部面板，平板搜索为侧栏；地图通过 AndroidView 保留 Canvas 绘制。支持中文、日文、韩文界面，跟随系统语言，也可通过 Android 13+ 的应用语言设置切换。朝鲜地名以有依据的汉字名为主，谚文以小字显示，搜索兼容古今名称、原文、简繁体、平假名读音与拼音；越南地方资料仍待接入。
 
 默认优先显示县／旧郡／府郡县层级。同一实体只在图上标注一次，同名但不同实体分别保留，去掉重复底栏和定位精度说明。有县级边界时，以当前位置为中心适配辖区范围；缺县界时保持当地视野，只标注附近治所，不推断县界归属，不再自动扩大到整府。
 
@@ -99,48 +99,6 @@ python3 tests/adaptive_emulator.py
 GitHub Actions 的 `.github/workflows/build.yml` 在每次推送时自动执行测试性构建，也支持手动触发。流程使用 JDK 25、Android SDK 37 与仓库的 Gradle Wrapper，编译 Debug APK 和 Android 测试 APK，并执行 Debug／Release Lint。所用 Action 均采用配置时核实的最新稳定版本。
 
 CI 使用空地图、空地区轮廓与完整时期目录作为占位文件，下载产物 `test-apks-no-map-data` 不含历史地图数据，仅用于构建验证；产物与 Lint 报告保留 7 天。完整研究数据的 Python 校验和模拟器交互测试仍按本地流程运行。
-
-## Google Play 内部测试发布
-
-`.github/workflows/release.yml` 在推送 `v*` 标签时自动发布，也支持在 GitHub Actions 页面选择该工作流后手动运行。流程下载来源数据、生成真实离线地图、运行 Python 数据校验和 Release Lint，再构建以 upload key 签名的 AAB，上传到包名 `asia.locality.map` 的 `internal` 轨道，发布状态为 `completed`。
-
-### 首次配置
-
-1. 在 Google Cloud 项目中启用 Google Play Android Developer API，创建服务账号和 JSON 密钥。
-2. 在 Play Console 的“用户和权限”中邀请服务账号邮箱，为此应用授予“查看应用信息”和“将应用发布到测试轨道”的权限（[权限说明](https://support.google.com/googleplay/android-developer/answer/9844686)）。应用应已通过 Console 上传过一个版本，并配置 Play App Signing。
-3. 在 GitHub 仓库的 **Settings → Secrets and variables → Actions → Secrets** 添加以下内容：
-
-| Secret | 内容 |
-| --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | Play 已登记的 upload keystore 的 Base64 内容 |
-| `ANDROID_KEYSTORE_PASSWORD` | Keystore 密码 |
-| `ANDROID_KEY_ALIAS` | Upload key 的 alias |
-| `ANDROID_KEY_PASSWORD` | Upload key 的密码 |
-| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | 服务账号 JSON 密钥文件的完整内容 |
-
-Keystore 使用现有 upload key；可在 Linux 上运行 `base64 -w 0 /path/to/upload.jks`，将输出保存到对应的 Secret。使用 GitHub CLI 时可直接写入，避免在终端显示凭据：
-
-```sh
-base64 -w 0 /path/to/upload.jks | gh secret set ANDROID_KEYSTORE_BASE64
-gh secret set GOOGLE_PLAY_SERVICE_ACCOUNT_JSON < /path/to/service-account.json
-```
-
-### 版本与触发
-
-当前 Play 最大 `versionCode` 为 **1**，工作流以 `1 + github.run_number` 生成新版本号，第一次运行生成 **2**。`versionName` 取标签去掉 `v` 的部分，手动运行时填写 `version_name`，例如 `0.1.1`。后续每次新运行的 `versionCode` 自动递增。
-
-将工作流及相关改动提交并推送到默认分支后，可推送版本标签触发发布：
-
-```sh
-git tag v0.1.1
-git push origin v0.1.1
-```
-
-若将来通过其他渠道上传更高的 `versionCode`，可在同一设置页的 **Variables** 配置 `ANDROID_VERSION_CODE_BASE` 为当时已上传的最大整数值。重新运行同一个 Actions run 会保留原版本号；若该版本号已被 Play 接收，需发起一次新的手动运行，并填写相同的 `version_name`。
-
-签名文件仅在 runner 临时目录中还原，工作流结束时删除；密码通过环境变量传入 Gradle。Release 流程保存 Lint 报告 7 天。实际上传需要上述凭据与 Play 权限配置就绪。
-
-参考：[Google Play API 接入](https://developers.google.com/android-publisher/getting_started)、[应用签名与 upload key](https://developer.android.com/studio/publish/app-signing)、[上传 Action](https://github.com/r0adkll/upload-google-play)。
 
 ## 网站发布（GitHub Pages）
 

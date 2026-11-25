@@ -31,10 +31,23 @@
 
     <p class="vertical-mark" aria-hidden="true">一地一图 · 各有其时</p>
 
-    <h1>此刻你站的地方，历史上叫什么</h1>
+    <h1>行至一处，展卷见旧时州县</h1>
+    <p class="lede">此地是一份装在手机里的离线历史舆图。专为实地访古与旅途读史而设：无网络权限、无冗余弹窗，纯白宣纸底上只留有据可查的历代城池、治所与辖界。</p>
+    <p class="actions">
+      <a class="action-btn" href="https://github.com/yihtseu/AsiaLocalityMap/releases/latest" target="_blank" rel="noopener noreferrer">下载最新版 · GitHub Releases</a>
+    </p>
 
-    <h2><span class="idx">01</span>界面</h2>
-    <p>中国提供汉、唐、宋、明菜单，朝鲜提供新羅、高麗、朝鮮，日本固定为近世国郡；越南地方资料仍缺失，详见<a href="product.html">资料约定</a>。下列截图摄于时期选择器加入之前，当前版本已可按地区切换时期。</p>
+    <h2><span class="idx">01</span>行旅与展卷</h2>
+    <ul>
+      <li><strong>立处即古境</strong>：打开应用定位当前坐标，墨点之外随手机朝向浮现视线扇面；若立身于古治所之外，淡墨游丝虚线直引附近县治、府治或军卫驻地，并标明八风方位与里程。</li>
+      <li><strong>一栏越千年</strong>：选中或定位一处，底部轻浮宣纸古今条，并列该坐标在汉、唐、宋、明（或新羅、高麗、朝鮮）的真实辖属；轻点任一朝代即可瞬切底图。</li>
+      <li><strong>旧界相叠印</strong>：切换时代时，上一朝代所选州府的轮廓以淡赭墨虚线留驻于新界之下，千年间辖境的分合、盈缩一目了然。</li>
+      <li><strong>朱印记踏访</strong>：亲历或考索过的古州县，可随手钤上一枚「曾至」朱文小印；图上地名旁点缀朱砂方印，检索面板亦支持一键汇总踏访足迹。</li>
+      <li><strong>今名觅旧治</strong>：检索兼通古今。无论输入历史建置、繁简汉字、谚文、平假名读音（如「かどの」），抑或直接输入现代市县乡镇名（如「南京」「大同」「汉阳」），皆可直达对应时代的故城治所。</li>
+    </ul>
+
+    <h2><span class="idx">02</span>界面与多语</h2>
+    <p>界面随视野所在地区呈现对应纪年：中国设<strong>汉、唐、宋、明</strong>四朝，朝鲜半岛设<strong>新羅、高麗、朝鮮</strong>三代，日本固定展示<strong>近世</strong>国郡；越南地方资料尚待核验接入，详见<a href="product.html">资料约定</a>。支持中、日、韩三语界面，手机与平板自适应排布。</p>
 
     <div class="device-pair">
       <figure class="phone-shot">
@@ -69,27 +82,27 @@
       </figure>
     </div>
 
-    <h2><span class="idx">02</span>数据</h2>
+    <h2><span class="idx">03</span>收录规模</h2>
 
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>来源</th>
-            <th class="num">原始记录</th>
-            <th class="num">默认组合（明代1585年）</th>
+            <th>资料层级</th>
+            <th class="num">研究库总计</th>
+            <th class="num">默认截面（明万历十三年 · 1585）</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td>汉唐宋郡州面（新增）</td><td class="num">103／307／313</td><td class="num">按朝代加载</td></tr>
-          <tr><td>CHGIS 县级治所时序</td><td class="num">10,522</td><td class="num">1,401</td></tr>
-          <tr><td>CHGIS 府级治所时序</td><td class="num">5,226</td><td class="num">4（边界外补充）</td></tr>
-          <tr><td>CHGIS 府级辖区时序</td><td class="num">3,830</td><td class="num">227</td></tr>
-          <tr><td>永平府—辽东都司参考面</td><td class="num">1582年</td><td class="num">2</td></tr>
-          <tr><td>明代卫所驻地点</td><td class="num">375</td><td class="num">353</td></tr>
-          <tr><td>日本旧国／旧郡</td><td class="num">85 国、806 郡（源目录）</td><td class="num">68 国、715 郡（1864年参考）</td></tr>
-          <tr><td>新羅州级／高麗上级辖区</td><td class="num">757／1370年基准</td><td class="num">9州／8上级（按时期加载）</td></tr>
-          <tr><td>朝鮮府郡县辖区</td><td class="num">1864年基准</td><td class="num">334府郡县、9道级辖区</td></tr>
+          <tr><td>汉、唐、宋郡州府辖界</td><td class="num">103／307／313</td><td class="num">随时代切换加载</td></tr>
+          <tr><td>CHGIS 历代县级治所时序（含今地考证）</td><td class="num">10,522</td><td class="num">1,401</td></tr>
+          <tr><td>CHGIS 历代府级治所时序</td><td class="num">5,226</td><td class="num">4（辖界外独点补充）</td></tr>
+          <tr><td>CHGIS 历代府州辖界时序</td><td class="num">3,830</td><td class="num">227</td></tr>
+          <tr><td>明代永平府—辽东都司同源参考面</td><td class="num">1582年基准</td><td class="num">2</td></tr>
+          <tr><td>明代卫所驻城与大宁迁驻参考</td><td class="num">376</td><td class="num">354</td></tr>
+          <tr><td>日本近世令制国与旧郡（含假名读音）</td><td class="num">85 国、806 郡（源目）</td><td class="num">68 国、715 郡（1864年基准）</td></tr>
+          <tr><td>新羅九州五小京／高麗五道两界八牧</td><td class="num">757／1370年基准</td><td class="num">9 州／8 上级（随时代加载）</td></tr>
+          <tr><td>朝鮮八道与府郡县辖区（含沿革异名）</td><td class="num">1864年基准</td><td class="num">9 道、334 府郡县</td></tr>
         </tbody>
       </table>
     </div>

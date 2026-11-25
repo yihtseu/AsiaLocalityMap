@@ -132,6 +132,27 @@ sealed class BoundaryLines {
             if (size > 0) canvas.drawLines(coordinates, 0, size, paint)
         }
 
+        fun drawDashed(canvas: Canvas, paint: Paint, dashPx: Float, gapPx: Float) {
+            val stride = dashPx + gapPx
+            if (stride <= 0f) { draw(canvas, paint); return }
+            var i = 0
+            while (i + 3 < size) {
+                val ax = coordinates[i]; val ay = coordinates[i + 1]
+                val bx = coordinates[i + 2]; val by = coordinates[i + 3]
+                i += 4
+                val dx = bx - ax; val dy = by - ay
+                val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                if (len <= 0.5f) continue
+                val ux = dx / len; val uy = dy / len
+                var pos = 0f
+                while (pos < len) {
+                    val end = min(len, pos + dashPx)
+                    canvas.drawLine(ax + ux * pos, ay + uy * pos, ax + ux * end, ay + uy * end, paint)
+                    pos += stride
+                }
+            }
+        }
+
         private fun outcode(x: Double, y: Double, width: Double, height: Double): Int =
             (if (x < -margin) 1 else if (x > width + margin) 2 else 0) or
                 (if (y < -margin) 4 else if (y > height + margin) 8 else 0)

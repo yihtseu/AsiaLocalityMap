@@ -1,6 +1,7 @@
 package asia.locality.map
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.Normalizer
@@ -69,6 +70,7 @@ class MapData private constructor(
         val layer: String = row.optString("layer", "administrative")
         val year: Int = row.optInt("year")
         val rank: Int = row.optInt("rank", 1)
+        val presentLocation: String = row.optString("present_location")
         val secondaryName: String? = nativeName.takeIf { it.isNotBlank() && it != name }
         val point: Boolean = row.getJSONObject("geometry").getString("type") == "Point"
         init {
@@ -197,6 +199,20 @@ class MapData private constructor(
             return EARTH_RADIUS_M / 1000 * 2 * asin(sqrt(a.coerceAtMost(1.0)))
         }
 
+        /** Initial bearing in degrees [0, 360) from (lon, lat) to (lon2, lat2), 0 = North, 90 = East. */
+        fun bearing(lon: Double, lat: Double, lon2: Double, lat2: Double): Double {
+            val phi1 = Math.toRadians(lat)
+            val phi2 = Math.toRadians(lat2)
+            val dLon = Math.toRadians(lon2 - lon)
+            val y = sin(dLon) * cos(phi2)
+            val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
+            return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+        }
+
+        /** Eight-wind index 0..7 (N, NE, E, SE, S, SW, W, NW) for a bearing in degrees. */
+        fun cardinalIndex(bearingDegrees: Double): Int =
+            (((bearingDegrees % 360.0 + 360.0) % 360.0 + 22.5) / 45.0).toInt() % 8
+
         @Volatile private var referenceYearsCache: JSONObject? = null
         private fun referenceYears(context: Context): JSONObject = referenceYearsCache
             ?: JSONObject(context.assetText("reference-years.json")).also { referenceYearsCache = it }
@@ -226,7 +242,9 @@ class MapData private constructor(
                         val network = if (key.isEmpty()) null else networks.getOrPut(key) {
                             BoundaryNetwork(key, JSONObject(context.assetText("boundaries/$key.json")))
                         }
-                        features.add(Feature(row, network))
+                        // One undocumented record must not take the whole map down.
+                        try { features.add(Feature(row, network)) }
+                        catch (error: IllegalArgumentException) { Log.w("AsiaLocalityMap", "Skipped feature: ${error.message}") }
                     }
                 }
             }

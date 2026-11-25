@@ -14,11 +14,13 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.min
+import kotlin.math.pow
 
 /** White paper, ink boundaries and names. Reuses label geometry across frames. */
 class InkMapView @JvmOverloads constructor(
@@ -32,6 +34,8 @@ class InkMapView @JvmOverloads constructor(
 
     var listener: Listener? = null
     private val density = resources.displayMetrics.density
+    // Map labels follow the system font scale, mildly, so they stay readable without crowding.
+    private val textScale = density * (1f + 0.3f * (resources.configuration.fontScale - 1f))
     private val ink = Paint(Paint.ANTI_ALIAS_FLAG)
     private val boundaryBuffer = BoundaryLines.Buffer(max(4.0, density * 2.0))
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
@@ -41,13 +45,18 @@ class InkMapView @JvmOverloads constructor(
     private var span = 40.0
     private var hereX: Double? = null
     private var hereY = 0.0
+    private var hereAccuracy = 0f
+    private var headingDegrees = Float.NaN
+    private val headingSector = RectF()
     private var selected: MapData.Feature? = null
+    private var ghost: MapData.Feature? = null
     private var hereArea: MapData.Feature? = null
+    private var visitedIds = emptySet<String>()
     private class Label {
         val bounds = RectF()
         var feature: MapData.Feature? = null
     }
-    private val labels = Array(66) { Label() }
+    private val labels = Array(MapMetrics.MAX_VISIBLE_LABELS + 1) { Label() }
     private var labelCount = 0
     private var labelTopInset = 0
     private val candidateBounds = RectF()
@@ -95,7 +104,7 @@ class InkMapView @JvmOverloads constructor(
             val focusX = centerX + (detector.focusX - width / 2.0) / oldScale
             val focusY = centerY - (detector.focusY - height / 2.0) / oldScale
             if (detector.scaleFactor != 1f) twoFingerMoved = true
-            span = (span / detector.scaleFactor).coerceIn(0.04, 100.0)
+            span = (span / detector.scaleFactor).coerceIn(MapMetrics.MIN_SPAN, MapMetrics.MAX_SPAN)
             centerX = focusX - (detector.focusX - width / 2.0) / scale()
             centerY = focusY + (detector.focusY - height / 2.0) / scale()
             constrain(); invalidate()
@@ -113,7 +122,7 @@ class InkMapView @JvmOverloads constructor(
             return true
         }
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            tapX = null; zoom(0.5)
+            tapX = null; zoomAt(e.x, e.y, 0.5, animate = true)
             return true
         }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -127,6 +136,7 @@ class InkMapView @JvmOverloads constructor(
         setBackgroundColor(Color.WHITE)
         contentDescription = context.getString(R.string.map_description)
         isFocusable = true
+        accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         isClickable = true
     }
 
@@ -138,6 +148,8 @@ class InkMapView @JvmOverloads constructor(
         invalidate()
     }
     fun setData(value: MapData) {
+        val previous = selected ?: hereArea
+        ghost = previous?.takeIf { !it.point && it.boundary != null }
         data = value
         selected = null
         hereArea = null
@@ -151,15 +163,38 @@ class InkMapView @JvmOverloads constructor(
         invalidate()
     }
     fun select(feature: MapData.Feature?) {
+        if (feature != null && feature !== selected) {
+            stateDescription = listOf(feature.name, feature.kind).filter { it.isNotBlank() }.joinToString(" · ")
+        }
         selected = feature
-        if (feature != null) markerX = Double.NaN
+        if (feature != null) {
+            markerX = Double.NaN
+            if (feature.id == ghost?.id) ghost = null
+        }
         labelsDirty = true
+        invalidate()
+    }
+    fun setHeading(degrees: Float) {
+        val prev = headingDegrees
+        if (degrees.isNaN() && prev.isNaN()) return
+        if (!degrees.isNaN() && !prev.isNaN()) {
+            val diff = kotlin.math.abs(((degrees - prev + 540f) % 360f) - 180f)
+            if (diff < 1.5f) return
+        }
+        headingDegrees = degrees
+        if (hereX != null) invalidate()
+    }
+    fun setVisited(ids: Set<String>) {
+        if (visitedIds == ids) return
+        visitedIds = ids
         invalidate()
     }
     fun go(lon: Double, lat: Double, width: Double) {
         animateCamera(lon, MapData.mercator(lat), width)
     }
-    fun setHere(lon: Double, lat: Double) { hereX = lon; hereY = MapData.mercator(lat); invalidate() }
+    fun setHere(lon: Double, lat: Double, accuracyMeters: Float = 0f) {
+        hereX = lon; hereY = MapData.mercator(lat); hereAccuracy = accuracyMeters; invalidate()
+    }
     fun nameHere(area: MapData.Feature?) { hereArea = area; labelsDirty = true; invalidate() }
     fun focusCounty(lon: Double, lat: Double, area: MapData.Feature) {
         val y = MapData.mercator(lat)
@@ -171,6 +206,17 @@ class InkMapView @JvmOverloads constructor(
         val base = if (cameraAnimator?.isRunning == true) targetSpan else span
         animateCamera(centerX, centerY, base * factor)
     }
+    /** Zoom by [ratio] (<1 zooms in) keeping the map point under ([px], [py]) fixed. */
+    private fun zoomAt(px: Float, py: Float, ratio: Double, animate: Boolean) {
+        val newSpan = (span * ratio).coerceIn(MapMetrics.MIN_SPAN, MapMetrics.MAX_SPAN)
+        val applied = newSpan / span
+        val nx = centerX + (px - width / 2.0) / scale() * (1 - applied)
+        val ny = centerY - (py - height / 2.0) / scale() * (1 - applied)
+        if (animate) { animateCamera(nx, ny, newSpan); return }
+        stopCamera()
+        centerX = nx; centerY = ny; span = newSpan
+        constrain(); invalidate()
+    }
     fun stopCamera() {
         cameraAnimator?.cancel()
         cameraAnimator = null
@@ -179,7 +225,7 @@ class InkMapView @JvmOverloads constructor(
         stopCamera()
         val endX = x.coerceIn(-180.0, 180.0)
         val endY = y.coerceIn(-140.0, 140.0)
-        targetSpan = requestedSpan.coerceIn(0.04, 100.0)
+        targetSpan = requestedSpan.coerceIn(MapMetrics.MIN_SPAN, MapMetrics.MAX_SPAN)
         if (!hasDrawnMap || !isAttachedToWindow || !ValueAnimator.areAnimatorsEnabled()) {
             centerX = endX; centerY = endY; span = targetSpan
             invalidate()
@@ -206,12 +252,26 @@ class InkMapView @JvmOverloads constructor(
     fun restoreViewport(value: DoubleArray) {
         if (value.size != 3) return
         stopCamera()
-        centerX = value[0]; centerY = value[1]; span = value[2].coerceIn(0.04, 100.0)
+        centerX = value[0]; centerY = value[1]; span = value[2].coerceIn(MapMetrics.MIN_SPAN, MapMetrics.MAX_SPAN)
         constrain(); invalidate()
     }
     private fun scale() = max(1, width) / span
     private fun constrain() {
-        centerX = centerX.coerceIn(-180.0, 180.0); centerY = centerY.coerceIn(-140.0, 140.0)
+        centerX = centerX.coerceIn(MapMetrics.MIN_LON, MapMetrics.MAX_LON)
+        centerY = centerY.coerceIn(MapData.mercator(MapMetrics.MIN_LAT), MapData.mercator(MapMetrics.MAX_LAT))
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL && event.isFromSource(android.view.InputDevice.SOURCE_CLASS_POINTER)) {
+            val wheel = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            if (wheel != 0f) {
+                zoomAt(event.x, event.y, MapMetrics.ZOOM_STEP.pow(-wheel.toDouble() / 2), animate = false)
+                removeCallbacks(refineBoundary)
+                postDelayed(refineBoundary, 120)
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
     }
 
     // GestureDetector calls performClick from onSingleTapConfirmed, after ruling out a double tap.
@@ -255,13 +315,18 @@ class InkMapView @JvmOverloads constructor(
                 ?: listener?.onMapPoint(centerX, MapData.latitude(centerY))
             return true
         }
-        for (i in labelCount - 1 downTo 0) {
-            val label = labels[i]
-            if (label.bounds.contains(x, tapY)) {
-                label.feature?.let { select(it); listener?.onPlace(it) }
-                return true
-            }
+        // Labels are small targets: accept a slop around each and take the closest centre.
+        val slop = MapMetrics.LABEL_HIT_SLOP * density
+        var hit: Label? = null
+        var hitDistance = Float.MAX_VALUE
+        for (i in 0 until labelCount) {
+            val bounds = labels[i].bounds
+            if (x < bounds.left - slop || x > bounds.right + slop || tapY < bounds.top - slop || tapY > bounds.bottom + slop) continue
+            val dx = x - bounds.centerX(); val dy = tapY - bounds.centerY()
+            val distance = dx * dx + dy * dy
+            if (distance < hitDistance) { hit = labels[i]; hitDistance = distance }
         }
+        hit?.feature?.let { select(it); listener?.onPlace(it); return true }
         markerX = centerX + (x - width / 2.0) / scale()
         markerY = centerY - (tapY - height / 2.0) / scale()
         invalidate()
@@ -300,12 +365,19 @@ class InkMapView @JvmOverloads constructor(
         boundaryBuffer.clear()
     }
 
+    /** Reuses the previous frame while the camera is unchanged, so steady redraws allocate nothing. */
+    private fun cameraFrame(): MapCamera {
+        val f = frame
+        return if (f.x == centerX && f.y == centerY && f.span == span && f.width == width && f.height == height) f
+        else MapCamera(centerX, centerY, span, width, height)
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         labelCount = 0
         val loaded = data ?: return
         hasDrawnMap = true
-        frame = MapCamera(centerX, centerY, span, width, height)
+        frame = cameraFrame()
         if (frame != layerCamera) {
             layerCamera = frame
             boundarySettled = false
@@ -315,19 +387,75 @@ class InkMapView @JvmOverloads constructor(
         }
         boundaryLayer?.draw(canvas, loaded, frame, density, boundarySettled)
         boundaryBuffer.clear()
+        ghost?.takeUnless { it.point || it.id == selected?.id || it.id == hereArea?.id }?.let {
+            appendBoundary(it)
+            ink.color = InkPalette.GHOST_BOUNDARY; ink.style = Paint.Style.STROKE; ink.strokeWidth = 1.0f * density
+            boundaryBuffer.drawDashed(canvas, ink, 5f * density, 4f * density)
+            boundaryBuffer.clear()
+        }
         selected?.takeUnless { it.point }?.let {
             appendBoundary(it)
-            strokeBoundaries(canvas, 0xff242424.toInt(), 1.3f)
+            strokeBoundaries(canvas, InkPalette.SELECTION, 1.3f)
         }
         if (!markerX.isNaN()) {
-            ink.color = 0xff242424.toInt(); ink.style = Paint.Style.STROKE; ink.strokeWidth = 1.5f * density
+            ink.color = InkPalette.SELECTION; ink.style = Paint.Style.STROKE; ink.strokeWidth = 1.5f * density
             canvas.drawCircle(sx(markerX), sy(markerY), 6 * density, ink)
         }
+        drawGuideLine(canvas)
+        drawHere(canvas)
         val area = hereArea
         if (hereX != null && area != null) drawLabel(canvas, area, sx(area.labelLon), sy(area.labelY), true)
         selected?.let { drawLabel(canvas, it, sx(it.labelLon), sy(it.labelY), true) }
         drawStableLabels(canvas, loaded)
         drawScaleBar(canvas)
+    }
+
+    private fun drawGuideLine(canvas: Canvas) {
+        val lon = hereX ?: return
+        val target = selected ?: return
+        if (target === hereArea && !target.point) return
+        val hx = sx(lon); val hy = sy(hereY)
+        val tx = sx(target.labelLon); val ty = sy(target.labelY)
+        val dx = tx - hx; val dy = ty - hy
+        val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (len < 16f * density || len > max(width, height) * 1.5f) return
+        ink.color = InkPalette.GUIDE_LINE; ink.style = Paint.Style.STROKE; ink.strokeWidth = 0.9f * density
+        val ux = dx / len; val uy = dy / len
+        val dash = 4f * density; val gap = 4f * density
+        var pos = 9f * density
+        val endLimit = len - 10f * density
+        while (pos < endLimit) {
+            val segEnd = min(endLimit, pos + dash)
+            canvas.drawLine(hx + ux * pos, hy + uy * pos, hx + ux * segEnd, hy + uy * segEnd, ink)
+            pos += dash + gap
+        }
+    }
+
+    private fun drawHere(canvas: Canvas) {
+        val lon = hereX ?: return
+        val x = sx(lon); val y = sy(hereY)
+        if (x < -width || x > 2 * width || y < -height || y > 2 * height) return
+        if (hereAccuracy > 0f) {
+            val metersPerPixel = MapMetrics.METERS_PER_DEGREE * cos(Math.toRadians(MapData.latitude(hereY))) / frame.scale
+            val radius = (hereAccuracy / metersPerPixel).toFloat()
+            if (radius > 10 * density) {
+                ink.style = Paint.Style.FILL; ink.color = InkPalette.HERE; ink.alpha = 28
+                canvas.drawCircle(x, y, radius, ink)
+                ink.style = Paint.Style.STROKE; ink.strokeWidth = density; ink.alpha = 90
+                canvas.drawCircle(x, y, radius, ink)
+            }
+        }
+        if (!headingDegrees.isNaN()) {
+            val coneRadius = 22f * density
+            headingSector.set(x - coneRadius, y - coneRadius, x + coneRadius, y + coneRadius)
+            ink.style = Paint.Style.FILL; ink.color = InkPalette.HERE; ink.alpha = 36
+            canvas.drawArc(headingSector, headingDegrees - 90f - 24f, 48f, true, ink)
+            ink.alpha = 255
+        }
+        ink.style = Paint.Style.FILL; ink.color = Color.WHITE
+        canvas.drawCircle(x, y, 7 * density, ink)
+        ink.color = InkPalette.HERE
+        canvas.drawCircle(x, y, 5 * density, ink)
     }
 
     private fun updateScaleBar() {
@@ -363,10 +491,10 @@ class InkMapView @JvmOverloads constructor(
 
     private fun drawScaleBar(canvas: Canvas) {
         updateScaleBar()
-        text.textSize = 12 * density; text.color = 0xff999999.toInt(); text.textAlign = Paint.Align.LEFT
+        text.textSize = 12 * density; text.color = InkPalette.SCALE; text.textAlign = Paint.Align.LEFT
         canvas.drawText(scaleCaption, 16 * density, height - 16 * density, text)
         text.textAlign = Paint.Align.CENTER
-        ink.color = 0xff999999.toInt(); ink.style = Paint.Style.STROKE; ink.strokeWidth = density * 0.6f
+        ink.color = InkPalette.SCALE; ink.style = Paint.Style.STROKE; ink.strokeWidth = density * 0.6f
         val left = 16 * density
         val top = height - 35 * density
         val right = left + scaleBarPixels
@@ -386,7 +514,7 @@ class InkMapView @JvmOverloads constructor(
         val secondary = f.secondaryName
         val nameWidth = if (force) measureName(f, mainSize) else nameWidths.getOrPut(f) { measureName(f, mainSize) }
         val halfWidth = nameWidth / 2 + 7 * density
-        candidateBounds.set(x - halfWidth, y - mainSize, x + halfWidth, y + (if (secondary != null) 23 else 8) * density)
+        candidateBounds.set(x - halfWidth, y - mainSize, x + halfWidth, y + (if (secondary != null) 23 else 8) * textScale)
         if (candidateBounds.top < labelTopInset + 4 * density || candidateBounds.bottom > height - 42 * density) return false
         if (candidateBounds.left < 4 * density || candidateBounds.right > width - 4 * density) return false
         for (i in 0 until labelCount) if (RectF.intersects(candidateBounds, labels[i].bounds)) return false
@@ -399,7 +527,7 @@ class InkMapView @JvmOverloads constructor(
         text.textSize = mainSize
         var width = text.measureText(f.name)
         f.secondaryName?.let {
-            text.textSize = 11 * density
+            text.textSize = MapMetrics.LABEL_SIZE_SECONDARY * textScale
             width = max(width, text.measureText(it))
         }
         return width
@@ -439,7 +567,7 @@ class InkMapView @JvmOverloads constructor(
         if (layout) {
             val existing = stableLabels.mapTo(HashSet()) { it.feature.labelId }
             for (f in loaded.labelFeatures) {
-                if (labelCount >= 65 || stableLabels.size >= 130) break
+                if (labelCount >= MapMetrics.MAX_VISIBLE_LABELS || stableLabels.size >= MapMetrics.MAX_STABLE_LABELS) break
                 if (!eligible(f) || f.labelId in existing) continue
                 val x = snap(sx(f.labelLon))
                 val y = snap(sy(f.labelY))
@@ -456,17 +584,30 @@ class InkMapView @JvmOverloads constructor(
     }
 
     private fun labelSize(f: MapData.Feature, force: Boolean) =
-        (if (force) 20 else if (f.rank <= 1) 18 else 16) * density
+        (if (force) MapMetrics.LABEL_SIZE_SELECTED else if (f.rank <= 1) MapMetrics.LABEL_SIZE_MAJOR
+        else MapMetrics.LABEL_SIZE_MINOR) * textScale
 
     private fun paintLabel(canvas: Canvas, f: MapData.Feature, x: Float, y: Float, force: Boolean, opacity: Float) {
-        text.textSize = labelSize(f, force)
+        val mainSize = labelSize(f, force)
+        text.textSize = mainSize
         if (y - text.textSize < labelTopInset + 4 * density) return
-        text.color = if (force) 0xff111111.toInt() else 0xff4c4c4c.toInt()
-        drawName(canvas, f.name, snap(x), snap(y), opacity)
+        text.color = if (force) InkPalette.LABEL_SELECTED else InkPalette.LABEL
+        val sx = snap(x)
+        val sy = snap(y)
+        drawName(canvas, f.name, sx, sy, opacity)
+        if (f.labelId in visitedIds) {
+            val half = text.measureText(f.name) / 2f
+            val dotX = sx + half + 4.5f * density
+            val dotY = sy - mainSize * 0.36f
+            val r = 2.2f * density
+            ink.style = Paint.Style.FILL; ink.color = InkPalette.SEAL; ink.alpha = (230 * opacity).roundToInt()
+            canvas.drawRect(dotX - r, dotY - r, dotX + r, dotY + r, ink)
+            ink.alpha = 255
+        }
         f.secondaryName?.let { secondary ->
-            text.textSize = 11 * density
-            text.color = 0xff777777.toInt()
-            drawName(canvas, secondary, snap(x), snap(y + 17 * density), opacity)
+            text.textSize = MapMetrics.LABEL_SIZE_SECONDARY * textScale
+            text.color = InkPalette.LABEL_SECONDARY
+            drawName(canvas, secondary, sx, snap(y + 17 * textScale), opacity)
         }
     }
 

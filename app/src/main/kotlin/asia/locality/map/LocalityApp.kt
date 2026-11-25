@@ -23,7 +23,11 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import kotlinx.coroutines.delay
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -40,9 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.onSizeChanged
 
-/** Regions whose menu offers more than one historical period. */
-private val PERIOD_REGIONS = setOf("cn", "kr")
-
 class UiMessage(val title: String, val body: String, val action: String, val onConfirm: () -> Unit)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3AdaptiveApi::class)
@@ -50,7 +51,9 @@ class UiMessage(val title: String, val body: String, val action: String, val onC
 fun LocalityApp(
     data: MapData?, statusId: Int?, searchOpen: Boolean, message: UiMessage?,
     timeline: Timeline?, year: Int, region: String, changingPeriod: Boolean, onPeriod: (HistoryPeriod) -> Unit,
-    onMapReady: (InkMapView) -> Unit, onMapReleased: (InkMapView) -> Unit,
+    selectedFeature: MapData.Feature? = null, trace: List<LocalityTrace> = emptyList(),
+    distanceNote: String? = null, visitedIds: Set<String> = emptySet(), onToggleVisited: (String) -> Unit = {},
+    onRetry: () -> Unit, onMapReady: (InkMapView) -> Unit, onMapReleased: (InkMapView) -> Unit,
     onControlsHeight: (Int) -> Unit,
     onSearch: () -> Unit, onCloseSearch: () -> Unit, onLocate: () -> Unit,
     onZoom: (Double) -> Unit, onChoose: (MapData.Feature) -> Unit, onDismissMessage: () -> Unit
@@ -65,14 +68,25 @@ fun LocalityApp(
     }
     val family = remember(kai) { FontFamily(kai) }
     val base = Typography()
-    val typography = Typography(
-        bodyLarge = base.bodyLarge.copy(fontFamily = family),
-        bodyMedium = base.bodyMedium.copy(fontFamily = family),
-        bodySmall = base.bodySmall.copy(fontFamily = family),
-        titleLarge = base.titleLarge.copy(fontFamily = family),
-        titleMedium = base.titleMedium.copy(fontFamily = family),
-        labelLarge = base.labelLarge.copy(fontFamily = family)
-    )
+    val typography = remember(family) {
+        Typography(
+            displayLarge = base.displayLarge.copy(fontFamily = family),
+            displayMedium = base.displayMedium.copy(fontFamily = family),
+            displaySmall = base.displaySmall.copy(fontFamily = family),
+            headlineLarge = base.headlineLarge.copy(fontFamily = family),
+            headlineMedium = base.headlineMedium.copy(fontFamily = family),
+            headlineSmall = base.headlineSmall.copy(fontFamily = family),
+            titleLarge = base.titleLarge.copy(fontFamily = family),
+            titleMedium = base.titleMedium.copy(fontFamily = family),
+            titleSmall = base.titleSmall.copy(fontFamily = family),
+            bodyLarge = base.bodyLarge.copy(fontFamily = family),
+            bodyMedium = base.bodyMedium.copy(fontFamily = family),
+            bodySmall = base.bodySmall.copy(fontFamily = family),
+            labelLarge = base.labelLarge.copy(fontFamily = family),
+            labelMedium = base.labelMedium.copy(fontFamily = family),
+            labelSmall = base.labelSmall.copy(fontFamily = family)
+        )
+    }
     val directive = calculatePaneScaffoldDirective(currentWindowAdaptiveInfoV2())
     val wide = directive.maxHorizontalPartitions > 1
     val searchState = rememberTextFieldState()
@@ -80,7 +94,7 @@ fun LocalityApp(
     var periodsOpen by rememberSaveable { mutableStateOf(false) }
     val density = LocalDensity.current
     var bottomBarHeight by remember { mutableIntStateOf(0) }
-    val periodChoices = if (region in PERIOD_REGIONS) timeline?.forRegion(region).orEmpty() else emptyList()
+    val periodChoices = timeline?.forRegion(region).orEmpty()
     BackHandler(enabled = wide && searchOpen && infoPage < 0, onBack = onCloseSearch)
     MaterialTheme(
         colorScheme = lightColorScheme(primary = Color(0xFF30332F), onPrimary = Color.White,
@@ -139,16 +153,33 @@ fun LocalityApp(
                                 Text(periodLabel, style = MaterialTheme.typography.labelLarge)
                             }
                         }
+                        if (data == null && statusId == R.string.loading) CircularProgressIndicator(
+                            Modifier.align(Alignment.Center).size(36.dp), strokeWidth = 2.dp)
                         if (changingPeriod) LinearProgressIndicator(Modifier.align(Alignment.TopCenter).fillMaxWidth())
                         Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 12.dp, vertical = 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally) {
                             // Transient notes float over the map so the map never resizes when they come and go.
                             if (statusId != null) Surface(shape = RoundedCornerShape(16.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                modifier = Modifier.padding(bottom = 8.dp)) {
-                                Text(stringResource(statusId), style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                                modifier = Modifier.padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(stringResource(statusId), style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                                    if (statusId == R.string.load_failed) TextButton(onClick = onRetry) {
+                                        Text(stringResource(R.string.retry))
+                                    }
+                                }
                             }
+                            if (selectedFeature != null) LocalityTraceBar(
+                                data = data,
+                                feature = selectedFeature,
+                                trace = trace,
+                                year = year,
+                                distanceNote = distanceNote,
+                                visited = selectedFeature.labelId in visitedIds,
+                                onToggleVisited = { onToggleVisited(selectedFeature.labelId) },
+                                onPeriod = onPeriod
+                            )
                             Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
                                 modifier = Modifier.onSizeChanged { bottomBarHeight = it.height + with(density) { 16.dp.roundToPx() } }) {
                                 Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -158,11 +189,11 @@ fun LocalityApp(
                                         Spacer(Modifier.width(8.dp))
                                         Text(stringResource(R.string.return_here))
                                     }
-                                    IconButton(onClick = { onZoom(0.6) }, modifier = Modifier.size(48.dp)) {
+                                    IconButton(onClick = { onZoom(1 / MapMetrics.ZOOM_STEP) }, modifier = Modifier.size(48.dp)) {
                                         Icon(painterResource(R.drawable.ic_plus),
                                             contentDescription = stringResource(R.string.zoom_in))
                                     }
-                                    IconButton(onClick = { onZoom(1.6) }, modifier = Modifier.size(48.dp)) {
+                                    IconButton(onClick = { onZoom(MapMetrics.ZOOM_STEP) }, modifier = Modifier.size(48.dp)) {
                                         Icon(painterResource(R.drawable.ic_minus),
                                             contentDescription = stringResource(R.string.zoom_out))
                                     }
@@ -174,16 +205,16 @@ fun LocalityApp(
                 supportingPane = {
                     if (wide && searchOpen) Surface(Modifier.fillMaxHeight().preferredWidth(360.dp).padding(12.dp),
                         shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                        SearchPanel(data, searchState, onCloseSearch, onChoose)
+                        SearchPanel(data, searchState, visitedIds, onCloseSearch, onChoose)
                     }
                 }
             )
             if (searchOpen && !wide) ModalBottomSheet(
                 onDismissRequest = onCloseSearch,
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.PartiallyExpanded))
             ) {
                 Box(Modifier.fillMaxHeight(0.85f).imePadding()) {
-                    SearchPanel(data, searchState, onCloseSearch, onChoose)
+                    SearchPanel(data, searchState, visitedIds, onCloseSearch, onChoose)
                 }
             }
             if (infoPage >= 0) InfoPages(infoPage, { infoPage = it }, { infoPage = -1 })
@@ -200,21 +231,122 @@ fun LocalityApp(
 }
 
 @Composable
-private fun SearchPanel(data: MapData?, state: TextFieldState,
+private fun LocalityTraceBar(
+    data: MapData?, feature: MapData.Feature, trace: List<LocalityTrace>, year: Int,
+    distanceNote: String?, visited: Boolean, onToggleVisited: () -> Unit, onPeriod: (HistoryPeriod) -> Unit
+) {
+    val context = LocalContext.current
+    val parentContext = remember(data, feature.id) { data?.contextNames(feature).orEmpty() }
+    val subtitle = remember(feature.id, parentContext, distanceNote, feature.presentLocation) {
+        buildList {
+            if (parentContext.isNotBlank()) add(parentContext)
+            if (feature.kind.isNotBlank()) add(feature.kind)
+            if (!distanceNote.isNullOrBlank()) add(distanceNote)
+            else if (feature.presentLocation.isNotBlank()) add(feature.presentLocation)
+        }.joinToString(" · ")
+    }
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.padding(bottom = 8.dp).widthIn(max = 460.dp)
+    ) {
+        Column(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(feature.name, style = MaterialTheme.typography.titleMedium)
+                if (feature.nativeName.isNotBlank() && feature.nativeName != feature.name) {
+                    Text(
+                        feature.nativeName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF666666),
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                }
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        " · $subtitle",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF555555),
+                        maxLines = 1
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (visited) Color(0xFF9E3A2B) else Color(0xFFE6E6E0),
+                    modifier = Modifier.clickable(onClick = onToggleVisited)
+                ) {
+                    Text(
+                        text = stringResource(if (visited) R.string.visited_unmark else R.string.visited_mark),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (visited) Color.White else Color(0xFF4C4C4C),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+            if (trace.size > 1) {
+                Row(
+                    Modifier.padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (item in trace) {
+                        val active = item.period.contains(year)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (active) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                            modifier = Modifier.clickable(enabled = !active) { onPeriod(item.period) }
+                        ) {
+                            Text(
+                                text = "${item.period.title(context)} ${item.placeName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (active) Color(0xFF111111) else Color(0xFF666666),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchPanel(data: MapData?, state: TextFieldState, visitedIds: Set<String>,
     onClose: () -> Unit, onChoose: (MapData.Feature) -> Unit) {
     val query = state.text.toString()
+    var filterVisited by rememberSaveable { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    val results = remember(data, query) {
+    // The sheet window takes focus after first composition, so wait for it before asking.
+    LaunchedEffect(Unit) { delay(250); focus.requestFocus() }
+    val visitedCount = remember(data, visitedIds) {
+        if (visitedIds.isEmpty()) 0 else data?.labelFeatures?.filter { it.labelId in visitedIds }?.distinctBy { it.labelId }?.size ?: 0
+    }
+    val results = remember(data, query, filterVisited, visitedIds) {
         val needle = MapData.normalizeSearch(query.trim())
-        if (needle.isBlank()) emptyList() else data?.labelFeatures?.filter {
-            it.searchText.contains(needle)
-        }?.distinctBy { it.labelId }?.take(100).orEmpty()
+        val base = data?.labelFeatures.orEmpty()
+        if (needle.isBlank()) {
+            if (filterVisited) base.filter { it.labelId in visitedIds }.distinctBy { it.labelId }.take(100)
+            else emptyList()
+        } else {
+            base.filter { (!filterVisited || it.labelId in visitedIds) && it.searchText.contains(needle) }
+                .sortedBy { matchRank(it, needle) }.distinctBy { it.labelId }.take(100)
+        }
     }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.search), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            if (visitedCount > 0 || filterVisited) {
+                FilterChip(
+                    selected = filterVisited,
+                    onClick = { filterVisited = !filterVisited },
+                    label = { Text(stringResource(R.string.visited_filter, visitedCount)) },
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+            }
             TextButton(onClick = onClose) { Text(stringResource(R.string.close)) }
         }
         OutlinedTextField(state = state, lineLimits = TextFieldLineLimits.SingleLine,
@@ -227,7 +359,7 @@ private fun SearchPanel(data: MapData?, state: TextFieldState,
                 }
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            onKeyboardAction = { keyboard?.hide() },
+            onKeyboardAction = { results.firstOrNull()?.let(onChoose) ?: keyboard?.hide() },
             label = { Text(stringResource(R.string.search_hint)) },
             shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth().focusRequester(focus))
         if (query.isNotBlank() && results.isEmpty()) Column(Modifier.padding(vertical = 20.dp)) {
@@ -245,13 +377,30 @@ private fun SearchPanel(data: MapData?, state: TextFieldState,
                     "政权" -> R.string.system_polity
                     else -> R.string.system_civil
                 })
+                val visited = feature.labelId in visitedIds
                 Column(Modifier.fillMaxWidth().clickable { onChoose(feature) }
                     .padding(horizontal = 12.dp, vertical = 16.dp)) {
-                    Text(feature.name, style = MaterialTheme.typography.bodyLarge)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(feature.name, style = MaterialTheme.typography.bodyLarge)
+                        if (visited) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF9E3A2B),
+                                modifier = Modifier.padding(start = 6.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.visited_unmark),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                     if (feature.nativeName.isNotBlank() && feature.nativeName != feature.name) {
                         Text(feature.nativeName, style = MaterialTheme.typography.bodySmall)
                     }
-                    Text(listOf(region, locality, feature.kind, system).filter { it.isNotBlank() }.joinToString(" · "),
+                    Text(listOf(region, locality, feature.kind, system, feature.presentLocation).filter { it.isNotBlank() }.joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall)
                     Text(stringResource(R.string.place_coordinates, feature.lat, feature.lon),
                         style = MaterialTheme.typography.bodySmall)
@@ -259,6 +408,16 @@ private fun SearchPanel(data: MapData?, state: TextFieldState,
             }
         }
     }
+}
+
+/** Exact name first, then names that start with the query, then any other match. */
+private fun matchRank(feature: MapData.Feature, needle: String): Int {
+    var best = 2
+    for (line in feature.searchText.lineSequence()) {
+        if (line == needle) return 0
+        if (line.startsWith(needle)) best = 1
+    }
+    return best
 }
 
 @Composable
@@ -280,7 +439,8 @@ private fun PeriodPicker(choices: List<HistoryPeriod>, region: String, year: Int
                     }
                 }
         },
-        confirmButton = {})
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onClose) { Text(stringResource(R.string.close)) } })
 }
 
 

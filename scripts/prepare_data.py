@@ -23,7 +23,7 @@ from historical_territories import region as territory_region, CN_POLITIES, VIET
 from prefecture_names import PrefectureNames
 from korean_boundaries import load_upper_areas, SILLA_YEAR, GORYEO_YEAR, SOURCE_BASES
 from korean_periods import ROWS as KOREAN_CENTERS, SILLA_SOURCE, GORYEO_SOURCE
-from historical_names import korean_name, korean_native, search_names, GROUP_ALIASES
+from historical_names import korean_name, korean_native, korean_aliases, search_names, GROUP_ALIASES
 from display_geometry import simplify_areas, simplify_land, counts as geometry_counts
 from boundary_topology import compile_directory
 from fileutil import json_text, sha256_file, write_json
@@ -105,7 +105,8 @@ def main():
     def store(fid, src, sid, region, kind, name, attributes, geom, start=None, end=None,
               flags=None, include=False, parent="", subtitle="", history=None, rank=1, system="民政",
               periods=None, years=None, layer="administrative", names_by_year=None, native_name="", label_id=None,
-              parents_by_year=None, time_region=None, native_names_by_year=None, geometry_year=None, display_geometry=None):
+              parents_by_year=None, time_region=None, native_names_by_year=None, geometry_year=None, display_geometry=None,
+              search_extras=None, present_location=""):
         flags = list(flags or [])
         if not geom.is_valid:
             flags.append("invalid_source_geometry")
@@ -144,6 +145,17 @@ def main():
         for profile in periods or [region]:
             con.execute("INSERT INTO baseline VALUES (?,?)", (fid, profile))
         con.executemany("INSERT INTO snapshot VALUES (?,?)", [(fid, year) for year in years])
+        raw_extras = [
+            attributes.get("PRES_LOC"),
+            attributes.get("PERS_LOC"),
+            attributes.get("NAME_PY"),
+            attributes.get("name_py"),
+            attributes.get("yomi"),
+            attributes.get("pref"),
+            attributes.get("kuni"),
+            *(search_extras or ()),
+        ]
+        loc_note = present_location or (attributes.get("PRES_LOC") or attributes.get("PERS_LOC") or "").strip()
         features.append({"id": fid, "name": name, "region": region, "kind": kind,
             "years": years, "layer": layer,
             "time_region": time_region or region, "names_by_year": names_by_year or {},
@@ -151,6 +163,7 @@ def main():
             "source_name": attributes.get("Name", name), "source_wikipedia": attributes.get("Wikipedia", ""),
             "periods": periods or [], "begin_year": start, "end_year": end, "geometry_year": geometry_year,
             "rank": rank, "parent": parent, "note": subtitle, "system": system,
+            "present_location": loc_note, "search_extras": [str(x).strip() for x in raw_extras if x and str(x).strip()],
             "source": source_urls[src], "history": history or [],
             "center": [round(center.x, 6), round(center.y, 6)],
             "geometry": mapping(small)})
@@ -202,14 +215,19 @@ def main():
                   begin, end, flags, subtitle=note, history=history, rank=rank, system=system, periods=periods, years=years)
 
     names = PrefectureNames(con)
+    pres_by_id = {f["id"]: f["present_location"] for f in features if f.get("present_location")}
     for i, a, geom in read_shp(RAW / "china-prefectures-zheng-wu.zip", "ResearchArea"):
         year = int(a["YEAR"].removesuffix("AD"))
         name, evidence = names.resolve(a, geom) if year in {2,742,1102} else (None, "unselected_reference_year")
         attrs = dict(a, layer="ResearchArea", name_evidence=evidence)
+        ev_locs = [pres_by_id[cid] for cid in evidence.removeprefix("CHGIS name identity:").strip().split(",")
+                   if cid in pres_by_id] if evidence.startswith("CHGIS name identity:") else []
         store(f"zheng-wu-prefecture:{year}:{a['PrefID']}", "zheng-wu-prefecture", str(a['PrefID']),
               "cn", "郡国辖区" if year == 2 else "州府辖区", name or a["PrefNAM"], attrs, geom,
               year, year, years=[year] if name else [], rank=1,
               flags=[] if name else [evidence],
+              search_extras=[a.get("PrefNAM"), *ev_locs],
+              present_location=ev_locs[0] if len(set(ev_locs)) == 1 else "",
               subtitle="据历史地图集数字化的郡州级参考辖界；不采用该研究的模拟县界。")
 
     for i, a, geom in read_shp(RAW / "ming-garrisons.zip"):
@@ -351,6 +369,7 @@ def main():
                   names_by_year={"1864": hanja} if hanja else {}, native_name=name,
                   native_names_by_year={"1864": a.get("nm_kr_1864")} if level == "lv2" else {},
                   label_id="hisgeo:" + GROUP_ALIASES.get(group, group),
+                  search_extras=korean_aliases(korean_summary, group),
                   subtitle="1864年地方辖区参考；汉字名按来源沿革表核对。",
                   history=histories.get(group, []),
                   flags=["source_name_conflict"] if level == "lv1" and a.get("nm_kr_1864", "").rstrip("도") not in ("", group) else [])
@@ -372,6 +391,7 @@ def main():
               native_names_by_year={str(y): a.get(f"nm_kr_{y}") for y in years} if a.get("adm_level") == "lv2" else {},
               label_id="hisgeo:" + GROUP_ALIASES.get(group, group),
               parents_by_year={str(y): korean_name(korean_summary, parent, y) or "" for y in years},
+              search_extras=korean_aliases(korean_summary, group),
               rank=1 if a.get("adm_level") == "lv1" else 2,
               subtitle="来源基准年的历史治所坐标，仅供点位参考，不表示辖界。")
 
@@ -537,7 +557,12 @@ def main():
             positions = {tuple(seat["center"]) for seat in matches}
             if len(positions) == 1:
                 seat = matches[0]
-                anchors[area["id"]] = {"label_center": seat["center"], "label_anchor_id": seat["id"]}
+                anchors[area["id"]] = {
+                    "label_center": seat["center"],
+                    "label_anchor_id": seat["id"],
+                    **({"present_location": seat["present_location"]} if seat.get("present_location") and not area.get("present_location") else {}),
+                    "search_extras": list(dict.fromkeys([*(area.get("search_extras") or ()), *(seat.get("search_extras") or ())])),
+                }
         # The polygon's name is authoritative for this displayed reference. Do not
         # label the same area again via an overlapping prefecture-seat record,
         # including alternate names around a within-year administrative reform.
@@ -572,7 +597,10 @@ def main():
                 row.pop("names_by_year", None)
                 row.pop("parents_by_year", None)
                 row.pop("native_names_by_year", None)
-                row["search_names"] = search_names(row["name"])
+                extras = row.pop("search_extras", ())
+                if not row.get("present_location"):
+                    row.pop("present_location", None)
+                row["search_names"] = search_names(row["name"], *extras)
                 stream.write(dump(row) + "\n")
                 con.execute("INSERT INTO display_snapshot VALUES (?,?,?)", (feature["id"], year, local_year))
         counts_by_year[str(year)] = dict(Counter(f["layer"] for f in rows))

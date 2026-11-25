@@ -9,9 +9,36 @@ to_simplified = _simplified.convert
 _traditional = OpenCC('s2t')
 
 @lru_cache(maxsize=32768)
-def search_names(name):
+def search_names(name, *extras):
     """Search aliases only: display names stay exactly as reviewed from their source."""
-    return list(dict.fromkeys([name, _simplified.convert(name), _traditional.convert(name)]))
+    values = [name]
+    for extra in extras:
+        if not extra:
+            continue
+        if isinstance(extra, (list, tuple, set)):
+            values.extend(str(item) for item in extra if item)
+        else:
+            values.append(str(extra))
+    result = []
+    for item in values:
+        item = item.strip()
+        if not item:
+            continue
+        result.extend([item, _simplified.convert(item), _traditional.convert(item)])
+    return list(dict.fromkeys(result))
+
+
+def korean_aliases(summary, group):
+    """Documented Hanja and Hangul aliases from the publisher's summary table."""
+    key = GROUP_ALIASES.get(group, group)
+    aliases = []
+    for row in summary.get(key, []):
+        for name, _ in re.findall(r'([\u3400-\u9fff\uf900-\ufaff]+)\(([^)]*)\)', str(row.get('hist_name', ''))):
+            aliases.append(unicodedata.normalize('NFKC', name))
+        ref = str(row.get('ref_groupid', '')).strip()
+        if ref and ref != '-':
+            aliases.extend(part.strip() for part in ref.split('/') if part.strip())
+    return list(dict.fromkeys(aliases))
 
 GROUP_ALIASES = {'경도': '한성', '경도_한성': '한성'}
 

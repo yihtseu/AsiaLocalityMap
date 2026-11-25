@@ -165,7 +165,9 @@ class HistoricalDataTests(unittest.TestCase):
                 if f['region'] in {'kr','vn'}:
                     self.assertRegex(f['name'],r'[\u3400-\u9fff]',f['id'])
         self.assertTrue(any(f['name']=='漢城' and f['native_name']=='한성' for f in self.rows))
-        self.assertTrue(any(f['name']=='漢城' and '汉城' in f['search_names'] for f in self.rows))
+        self.assertTrue(any(f['name']=='漢城' and '汉城' in f['search_names'] and '汉阳' in f['search_names'] for f in self.rows))
+        self.assertTrue(any(f['name']=='应天府' and any('南京' in s for s in f['search_names']) for f in self.rows))
+        self.assertTrue(any(f['name']=='葛野郡' and 'かどの' in f['search_names'] for f in self.rows))
         self.assertTrue(all(f['native_name']=='한성' for f in self.rows if f['name']=='漢城'))
         self.assertTrue(any(f['name']=='始興' and f['native_name']=='시흥' for f in snapshot(1864)))
         self.assertTrue(any(f['name']=='公忠' and f['native_name']=='공충' for f in snapshot(1864)))

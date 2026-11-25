@@ -157,8 +157,14 @@ class MapGestureProbe : Instrumentation() {
             bitmap.recycle()
         }
     }
-    private fun state(activity: MainActivity, name: String): Any? =
-        (field(name + "$" + "delegate").get(activity) as androidx.compose.runtime.State<*>).value
+    private fun state(activity: MainActivity, name: String): Any? {
+        // Loading state lives in the MapViewModel; UI-only state stays on the activity.
+        if (name in setOf("data", "statusId", "year", "timeline", "changingPeriod")) {
+            val model = (field("model$" + "delegate").get(activity) as Lazy<*>).value!!
+            return model.javaClass.getMethod("get" + name.replaceFirstChar { it.uppercase() }).invoke(model)
+        }
+        return (field(name + "$" + "delegate").get(activity) as androidx.compose.runtime.State<*>).value
+    }
 
     private fun awaitData(activity: MainActivity, expected: Int? = null): MapData {
         val deadline = SystemClock.uptimeMillis() + 60_000
@@ -211,8 +217,7 @@ class MapGestureProbe : Instrumentation() {
             }
             if (region == "kr") {
                 val option = catalogue.forRegion(region).single()
-                val label = targetContext.getString(R.string.period_label, option.title(targetContext),
-                    targetContext.getString(R.string.year_ce, option.year))
+                val label = option.title(targetContext)
                 check(!awaitNode { it.text?.toString() == label }.isClickable)
                 continue
             }
@@ -224,11 +229,9 @@ class MapGestureProbe : Instrumentation() {
             }
             val localYear = requireNotNull(data.referenceYears[region])
             val active = requireNotNull(catalogue.atYear(region, expectedYear))
-            val date = targetContext.getString(if (localYear < 0) R.string.year_bce else R.string.year_ce, kotlin.math.abs(localYear))
-            clickText(targetContext.getString(R.string.period_label, active.title(targetContext), date))
+            clickText(active.title(targetContext))
             val first = catalogue.forRegion(region).first()
-            val firstDate = targetContext.getString(if (first.year < 0) R.string.year_bce else R.string.year_ce, kotlin.math.abs(first.year))
-            awaitNode { it.text?.toString() == targetContext.getString(R.string.period_label, first.title(targetContext), firstDate) }
+            awaitNode { it.text?.toString() == first.title(targetContext) }
             if (region != "cn") check(findNode { it.text?.toString()?.contains("汉 ·") == true } == null)
             check(findNode { it.text?.toString() == "清" } == null)
             clickText(targetContext.getString(R.string.close))
@@ -315,10 +318,8 @@ class MapGestureProbe : Instrumentation() {
         for (period in catalogue.forRegion("cn")) {
             val before = awaitData(activity)
             val active = requireNotNull(catalogue.atYear("cn", before.year))
-            clickText(targetContext.getString(R.string.period_label, active.title(targetContext),
-                targetContext.getString(R.string.year_ce, before.year)))
-            clickText(targetContext.getString(R.string.period_label, period.title(targetContext),
-                targetContext.getString(R.string.year_ce, period.year)))
+            clickText(active.title(targetContext))
+            clickText(period.title(targetContext))
             val loaded = awaitData(activity, period.year)
             val expected = when(period.id) { "han" -> "南阳郡"; "ming" -> "南阳府"; else -> "邓州" }
             val area = requireNotNull(loaded.localAreaAt(112.5283, 32.9908))

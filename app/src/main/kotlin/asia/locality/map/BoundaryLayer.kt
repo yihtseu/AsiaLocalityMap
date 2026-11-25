@@ -50,7 +50,7 @@ class BoundaryLayer(private val invalidate: () -> Unit) {
             left >= current.left && camera.right <= current.right &&
             top <= current.top && camera.bottom >= current.bottom &&
             (camera.span <= 8) == (current.camera.span <= 8)
-        if (!running && (!reusable || (settled && current?.camera != camera))) {
+        if (!running && (!reusable || (settled && current.camera != camera))) {
             running = true
             val version = generation
             worker.execute {
@@ -109,13 +109,13 @@ class BoundaryLayer(private val invalidate: () -> Unit) {
             it.minX <= camera.right && it.minY <= camera.top && it.maxY >= camera.bottom }
         if (camera.span > 8 || !boundaryVisible) {
             for (feature in data.land) append(feature)
-            stroke(0xffbbbbbb.toInt(), 0.7f)
+            stroke(InkPalette.LAND, 0.7f)
         }
         for (feature in data.features) if (!feature.point && feature.rank == 1) append(feature)
-        stroke(0xff777777.toInt(), 0.8f, keepSeen = true)
+        stroke(InkPalette.BOUNDARY_MAJOR, 0.8f, keepSeen = true)
         if (camera.span <= 8) {
             for (feature in data.features) if (!feature.point && feature.rank > 1) append(feature)
-            stroke(0xffb0b0b0.toInt(), 0.5f)
+            stroke(InkPalette.BOUNDARY_MINOR, 0.5f)
         }
         return Tile(bitmap, camera, scale, left, top)
     }

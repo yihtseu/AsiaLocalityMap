@@ -4,6 +4,10 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -14,42 +18,45 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
-class MainActivity : ComponentActivity(), InkMapView.Listener {
+private const val NEARBY_SEAT_KM = 50.0
+/** Fraction of the viewport width within which an empty-ground tap may pick a seat. */
+private const val TAP_REACH = 0.25
+
+class MainActivity : ComponentActivity(), InkMapView.Listener, MapViewModel.Listener, SensorEventListener {
+    private val model by viewModels<MapViewModel>()
     private var map: InkMapView? = null
     private var controlsHeight = 0
     private lateinit var locations: LocationManager
-    private var data by mutableStateOf<MapData?>(null)
-    private var year by mutableIntStateOf(Timeline.DEFAULT_YEAR)
-    private var timeline by mutableStateOf<Timeline?>(null)
+    private var sensors: SensorManager? = null
+    private val rotationMatrix = FloatArray(9)
+    private val orientationAngles = FloatArray(3)
+    private val data get() = model.data
+    private val year get() = model.year
     private var viewRegion by mutableStateOf("cn")
-    private var changingPeriod by mutableStateOf(false)
-    // Retain immutable geometry for reuse when a later context becomes eligible again.
-    // These cached features are never added to an ineligible snapshot.
-    private var fixedReferences = emptyList<MapData.Feature>()
-    private var loadGeneration = 0
-    private var pendingLoad: java.util.concurrent.Future<*>? = null
-    private var statusId by mutableStateOf<Int?>(R.string.loading)
+    private var boundMap: InkMapView? = null
+    private var boundData: MapData? = null
     private var locationStatusId by mutableStateOf<Int?>(null)
     private var searchOpen by mutableStateOf(false)
     private var message by mutableStateOf<UiMessage?>(null)
     private var current: Location? = null
     private var restoredViewport: DoubleArray? = null
     private var selectedId: String? = null
+    private var selectedFeature by mutableStateOf<MapData.Feature?>(null)
+    private var distanceNote by mutableStateOf<String?>(null)
     private val handler = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
     private var locating = false
     private var destroyed = false
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -63,7 +70,7 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
         if (locating && SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos in 0L..120_000_000_000L) {
             current = location
             restoredViewport = null
-            map?.setHere(location.longitude, location.latitude)
+            map?.setHere(location.longitude, location.latitude, if (location.hasAccuracy()) location.accuracy else 0f)
             refreshHere()
             stopLocation()
             locationStatusId = null
@@ -73,33 +80,50 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // The paper look is always light, so keep dark system-bar icons even in system dark mode.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        )
         locations = getSystemService(LocationManager::class.java)
+        sensors = getSystemService(SensorManager::class.java)
         restoredViewport = savedInstanceState?.getDoubleArray("viewport")
         selectedId = savedInstanceState?.getString("selected")
         searchOpen = savedInstanceState?.getBoolean("search") ?: false
         val preferences = getPreferences(0)
-        year = savedInstanceState?.getInt("year")?.takeIf { it != 0 }
+        val initialYear = savedInstanceState?.getInt("year")?.takeIf { it != 0 }
             ?: preferences.getInt("year", Timeline.DEFAULT_YEAR)
         viewRegion = savedInstanceState?.getString("region") ?: "cn"
         if (savedInstanceState?.containsKey("longitude") == true) {
             current = Location("saved-ui").apply {
                 longitude = savedInstanceState.getDouble("longitude")
                 latitude = savedInstanceState.getDouble("latitude")
+                if (savedInstanceState.getFloat("accuracy") > 0f) accuracy = savedInstanceState.getFloat("accuracy")
             }
         }
         setContent {
             LocalityApp(
-                data = data,
-                timeline = timeline, year = year, region = viewRegion, changingPeriod = changingPeriod,
-                onPeriod = { period -> timeline?.let { changeYear(it.contextYearFor(period, year)) } },
-                statusId = locationStatusId ?: statusId,
+                data = model.data,
+                timeline = model.timeline, year = model.year, region = viewRegion, changingPeriod = model.changingPeriod,
+                onPeriod = { period -> model.timeline?.let { changeYear(it.contextYearFor(period, model.year)) } },
+                selectedFeature = selectedFeature,
+                trace = model.trace,
+                distanceNote = distanceNote,
+                visitedIds = model.visitedIds,
+                onToggleVisited = { labelId ->
+                    model.toggleVisited(labelId)
+                    map?.setVisited(model.visitedIds)
+                },
+                // A failed load must not be hidden behind a transient location note.
+                statusId = model.statusId.takeIf { it == R.string.load_failed } ?: (locationStatusId ?: model.statusId),
+                onRetry = model::retry,
                 searchOpen = searchOpen,
                 message = message,
                 onMapReady = ::attachMap,
                 onControlsHeight = { controlsHeight = it; map?.setLabelTopInset(it) },
                 onMapReleased = { view ->
                     if (map === view) {
+                        boundMap = null
                         if (data != null && restoredViewport == null) restoredViewport = view.viewport()
                         map = null
                     }
@@ -112,27 +136,8 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
                 onDismissMessage = { message = null }
             )
         }
-        worker.execute {
-            try {
-                val catalogue = Timeline.load(this)
-                val requestedYear = year
-                val loaded = MapData.load(this, catalogue.restoreYear(requestedYear))
-                handler.post {
-                    if (!destroyed) {
-                        data = loaded
-                        fixedReferences = loaded.fixedFeatures()
-                        timeline = catalogue
-                        year = loaded.year
-                        preferences.edit { putInt("year", year) }
-                        map?.let(::bindMap)
-                        if (statusId == R.string.loading) statusId = null
-                    }
-                }
-            } catch (ex: Exception) {
-                Log.e("AsiaLocalityMap", "Offline data failed", ex)
-                handler.post { if (!destroyed) { stopLocation(); locationStatusId = null; statusId = R.string.load_failed } }
-            }
-        }
+        model.listener = this
+        model.ensureLoaded(initialYear)
     }
 
     private fun attachMap(view: InkMapView) {
@@ -144,11 +149,16 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
 
     private fun bindMap(view: InkMapView) {
         val loaded = data ?: return
+        // Binding is idempotent: it can be reached from attachMap and from a finished load.
+        if (boundMap === view && boundData === loaded) return
+        boundMap = view
+        boundData = loaded
         view.setData(loaded)
+        view.setVisited(model.visitedIds)
         val saved = restoredViewport
         val savedSelection = selectedId
         current?.let {
-            view.setHere(it.longitude, it.latitude)
+            view.setHere(it.longitude, it.latitude, if (it.hasAccuracy()) it.accuracy else 0f)
             refreshHere()
             showAt(it.longitude, it.latitude, saved == null)
         }
@@ -160,57 +170,36 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
     }
 
     private fun changeYear(value: Int) {
-        val previous = data ?: return
-        if (value == year || value !in (timeline?.years ?: emptySet())) return
+        if (data == null || value == year) return
         stopLocation()
         locationStatusId = null
         map?.stopCamera()
-        changingPeriod = true
-        statusId = R.string.loading
-        val generation = ++loadGeneration
-        pendingLoad?.cancel(true)
-        pendingLoad = worker.submit {
-            try {
-                val loaded = MapData.load(this, value, previous.land, fixedReferences)
-                handler.post { if (!destroyed && generation == loadGeneration) applySnapshot(loaded) }
-            } catch (_: java.util.concurrent.CancellationException) {
-                // A more recent selection owns the next snapshot.
-            } catch (error: Exception) {
-                Log.e("AsiaLocalityMap", "Historical snapshot failed: $value", error)
-                handler.post {
-                    if (!destroyed && generation == loadGeneration) {
-                        changingPeriod = false
-                        statusId = R.string.load_failed
-                    }
-                }
-            }
-        }
+        model.changeYear(value)
     }
 
-    private fun applySnapshot(loaded: MapData) {
+    override fun onSnapshot(data: MapData) {
+        if (boundData == null) { map?.let(::bindMap); return }
         val viewport = map?.viewport() ?: restoredViewport
         val selection = selectedId
-        year = loaded.year
-        data = loaded
-        loaded.fixedFeatures().takeIf { it.isNotEmpty() }?.let { fixedReferences = it }
-        changingPeriod = false
-        getPreferences(0).edit { putInt("year", year) }
-        map?.setData(loaded)
+        boundMap = map
+        boundData = data
+        map?.setData(data)
+        map?.setVisited(model.visitedIds)
         selectedId = null
+        selectedFeature = null
+        distanceNote = null
         refreshHere()
         // Keep the viewed place and zoom, including when a camera transition was in progress.
         if (viewport != null) {
             map?.restoreViewport(viewport)
             showAt(viewport[0], MapData.latitude(viewport[1]), false)
-        } else {
-            statusId = null
         }
-        loaded.features.find { it.id == selection }?.let(::choose)
+        data.features.find { it.id == selection }?.let(::choose)
     }
 
     override fun onViewportChanged(lon: Double, lat: Double) {
         val view = map ?: return
-        viewRegion = timeline?.regionForViewport(lon, lat, view.viewport()[2],
+        viewRegion = model.timeline?.regionForViewport(lon, lat, view.viewport()[2],
             view.height.toDouble() / view.width.coerceAtLeast(1), viewRegion) ?: viewRegion
     }
 
@@ -284,35 +273,73 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
     override fun onMapPoint(lon: Double, lat: Double) {
         stopLocation()
         locationStatusId = null
-        showAt(lon, lat, false)
+        // The reach of a tap shrinks with the zoom, so an empty-ground tap never
+        // grabs a seat that is far outside the viewport.
+        val span = map?.viewport()?.get(2) ?: 1.0
+        val radius = minOf(NEARBY_SEAT_KM, TAP_REACH * span * MapData.EARTH_RADIUS_M / 1000 * Math.PI / 180 *
+            kotlin.math.cos(Math.toRadians(lat)))
+        val loaded = data ?: return
+        // Empty ground keeps the current selection; the map still drops its marker.
+        if (loaded.localAreaAt(lon, lat) == null && loaded.nearestSeat(lon, lat, radius) == null) return
+        showAt(lon, lat, false, radius)
     }
 
     private fun choose(feature: MapData.Feature) {
         selectedId = feature.id
+        selectedFeature = feature
         map?.select(feature)
-        statusId = null
+        model.clearStatus()
+        updateLocalityDetails(feature)
+    }
+
+    private fun updateLocalityDetails(feature: MapData.Feature?) {
+        if (feature == null) {
+            distanceNote = null
+            model.clearTrace()
+            return
+        }
+        val here = current
+        val anchorLon = MapData.latitude(feature.labelY).let { feature.labelLon }
+        val anchorLat = MapData.latitude(feature.labelY)
+        distanceNote = if (here != null) {
+            val km = MapData.distance(here.longitude, here.latitude, anchorLon, anchorLat)
+            if (km in 0.05..250.0) {
+                val dirRes = when (MapData.cardinalIndex(MapData.bearing(here.longitude, here.latitude, anchorLon, anchorLat))) {
+                    0 -> R.string.dir_n; 1 -> R.string.dir_ne; 2 -> R.string.dir_e; 3 -> R.string.dir_se
+                    4 -> R.string.dir_s; 5 -> R.string.dir_sw; 6 -> R.string.dir_w; else -> R.string.dir_nw
+                }
+                val dir = getString(dirRes)
+                if (km >= 1.0) getString(R.string.distance_dir_km, dir, km)
+                else getString(R.string.distance_dir_m, dir, (km * 1000).roundToInt())
+            } else null
+        } else null
+        val queryLon = if (here != null && !feature.point && feature.contains(here.longitude, MapData.mercator(here.latitude))) here.longitude else anchorLon
+        val queryLat = if (here != null && !feature.point && feature.contains(here.longitude, MapData.mercator(here.latitude))) here.latitude else anchorLat
+        model.updateTrace(feature.region, queryLon, queryLat)
     }
 
     private fun descriptionAt(lon: Double, lat: Double): String {
         val loaded = data ?: return getString(R.string.map_description)
         val area = loaded.localAreaAt(lon, lat)
         if (area != null) return getString(R.string.current_county_description, area.name)
-        val seat = loaded.nearestSeat(lon, lat, 50.0)
+        val seat = loaded.nearestSeat(lon, lat, NEARBY_SEAT_KM)
         if (seat != null) return getString(R.string.current_nearby_description, seat.name)
         return getString(R.string.current_unknown_description)
     }
 
-    private fun showAt(lon: Double, lat: Double, move: Boolean) {
+    private fun showAt(lon: Double, lat: Double, move: Boolean, radiusKm: Double = NEARBY_SEAT_KM) {
         val loaded = data ?: return
         val area = loaded.localAreaAt(lon, lat)
         if (area != null) {
             choose(area)
             if (move) map?.focusCounty(lon, lat, area)
         } else {
-            val seat = loaded.nearestSeat(lon, lat, 50.0)
+            val seat = loaded.nearestSeat(lon, lat, radiusKm)
             selectedId = seat?.id
+            selectedFeature = seat
             map?.select(seat)
-            statusId = null
+            model.clearStatus()
+            updateLocalityDetails(seat)
             if (move) {
                 val view = map
                 val aspect = if (view != null && view.height > 0) view.width.toDouble() / view.height else 1.0
@@ -344,21 +371,37 @@ class MainActivity : ComponentActivity(), InkMapView.Listener {
         outState.putBoolean("search", searchOpen)
         outState.putInt("year", year)
         outState.putString("region", viewRegion)
-        current?.let { outState.putDouble("longitude", it.longitude); outState.putDouble("latitude", it.latitude) }
+        current?.let {
+            outState.putDouble("longitude", it.longitude); outState.putDouble("latitude", it.latitude)
+            if (it.hasAccuracy()) outState.putFloat("accuracy", it.accuracy)
+        }
     }
     override fun onResume() {
         super.onResume()
         if (::locations.isInitialized && current == null && !locating && locations.isLocationEnabled && hasLocationPermission()) locate()
+        sensors?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
+            sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
     }
     override fun onStop() {
         super.onStop()
         if (locating) locationStatusId = R.string.location_interrupted
         stopLocation()
+        sensors?.unregisterListener(this)
     }
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR && current != null) {
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+            val azimuth = ((Math.toDegrees(orientationAngles[0].toDouble()) + 360.0) % 360.0).toFloat()
+            map?.setHeading(azimuth)
+        }
+    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     override fun onDestroy() {
         destroyed = true
+        if (model.listener === this) model.listener = null
         handler.removeCallbacksAndMessages(null)
-        worker.shutdownNow()
         super.onDestroy()
     }
 }

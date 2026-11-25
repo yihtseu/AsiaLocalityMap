@@ -12,7 +12,7 @@ val releaseVersionName = providers.gradleProperty("releaseVersionName").getOrEls
 
 android {
     namespace = "asia.locality.map"
-    compileSdk = 37
+    compileSdk { version = release(37) { minorApiLevel = 2 } }
     buildFeatures { compose = true }
     androidResources { generateLocaleConfig = true; localeFilters += listOf("zh", "zh-rCN", "ja", "ko") }
     defaultConfig {
@@ -28,10 +28,11 @@ android {
     if (!uploadKeystorePath.isNullOrBlank()) {
         signingConfigs {
             create("release") {
+                val storePass = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").get()
                 storeFile = file(uploadKeystorePath)
-                storePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").get()
-                keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").get()
-                keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").get()
+                storePassword = storePass
+                keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull?.takeIf { it.isNotBlank() } ?: "mykey"
+                keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull?.takeIf { it.isNotBlank() } ?: storePass
             }
         }
         buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
@@ -45,9 +46,11 @@ android {
     sourceSets.getByName("main").assets.directories.add("../data/processed/android")
     lint { abortOnError = true; warningsAsErrors = true }
 }
+kotlin { compilerOptions { allWarningsAsErrors.set(true) } }
+
 dependencies {
     testImplementation("junit:junit:4.13.2")
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.11.01"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
